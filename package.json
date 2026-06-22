@@ -1,0 +1,24 @@
+{
+  "name": "zipzo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hybrid grocery platform for MeroMart company products and MeroDokaan local shop marketplace.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @zipzo/api",
+    "dev:admin": "npm run dev -w @zipzo/admin",
+    "dev:mobile": "cd apps/mobile && flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:4000",
+    "analyze:mobile": "cd apps/mobile && flutter analyze",
+    "test:mobile": "cd apps/mobile && flutter test",
+    "build:mobile:web": "cd apps/mobile && flutter build web --dart-define=API_BASE_URL=http://localhost:4000",
+    "build": "npm run build -w @zipzo/shared && npm run build -w @zipzo/api && npm run build -w @zipzo/admin",
+    "lint": "npm run lint -w @zipzo/shared && npm run lint -w @zipzo/api && npm run lint -w @zipzo/admin",
+    "test": "npm run test -w @zipzo/shared && npm run test -w @zipzo/api && npm run test -w @zipzo/admin"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -340,12 +340,36 @@ async function startServer() {
 
   app.listen(port, () => {
     console.log(`Zipzo API running on http://localhost:${port}`);
+    startSelfPing();
   });
 }
 
 void startServer();
 
 class OrderBuildError extends Error {}
+
+function startSelfPing() {
+  const selfPingUrl = process.env.SELF_PING_URL;
+  if (!selfPingUrl) {
+    return;
+  }
+
+  const intervalMinutes = Number(process.env.SELF_PING_INTERVAL_MINUTES ?? 10);
+  const intervalMs = Math.max(intervalMinutes, 1) * 60 * 1000;
+
+  const ping = async () => {
+    try {
+      const response = await fetch(selfPingUrl);
+      console.log(`Self-ping ${response.status}: ${selfPingUrl}`);
+    } catch (error) {
+      console.warn("Self-ping failed", error);
+    }
+  };
+
+  setInterval(() => {
+    void ping();
+  }, intervalMs).unref();
+}
 
 async function findStore(id: string) {
   const result = await pool.query<StoreRecord>("SELECT * FROM stores WHERE id = $1", [id]);

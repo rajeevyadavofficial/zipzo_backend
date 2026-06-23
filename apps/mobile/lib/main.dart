@@ -58,6 +58,17 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
   }
 
   void _addToCart(Product product) {
+    final existingStoreId =
+        _cart.values.isEmpty ? null : _cart.values.first.product.storeId;
+    if (existingStoreId != null && existingStoreId != product.storeId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please checkout one store at a time.'),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       final current = _cart[product.id];
       _cart[product.id] = CartLine(
@@ -65,6 +76,26 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
         quantity: (current?.quantity ?? 0) + 1,
       );
     });
+  }
+
+  Future<void> _startCheckout(List<CartLine> lines) async {
+    final placed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => CheckoutSheet(lines: lines),
+    );
+
+    if (placed == true && mounted) {
+      setState(() {
+        _cart.clear();
+        _selectedIndex = 2;
+        _catalogFuture = ZipzoApi().loadCatalog();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Order placed successfully.')),
+      );
+    }
   }
 
   void _removeFromCart(String productId) {
@@ -122,7 +153,11 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen> {
                 stores: data.dokaanStores,
                 products: data.products,
                 onAdd: _addToCart),
-            CartView(lines: _cart.values.toList(), onRemove: _removeFromCart),
+            CartView(
+              lines: _cart.values.toList(),
+              onRemove: _removeFromCart,
+              onCheckout: _startCheckout,
+            ),
           ];
 
           return pages[_selectedIndex];
@@ -259,10 +294,12 @@ class CartView extends StatelessWidget {
     super.key,
     required this.lines,
     required this.onRemove,
+    required this.onCheckout,
   });
 
   final List<CartLine> lines;
   final ValueChanged<String> onRemove;
+  final ValueChanged<List<CartLine>> onCheckout;
 
   @override
   Widget build(BuildContext context) {
@@ -285,12 +322,16 @@ class CartView extends StatelessWidget {
       children: [
         const SectionHeader(
           title: 'Cart',
-          subtitle: 'MVP checkout preview. Order placement comes next.',
+          subtitle: 'Review your items and place a cash-on-delivery order.',
         ),
         const SizedBox(height: 12),
         ...lines.map((line) => CartLineTile(line: line, onRemove: onRemove)),
         const SizedBox(height: 12),
-        SummaryCard(subtotal: subtotal, deliveryFee: deliveryFee),
+        SummaryCard(
+          subtotal: subtotal,
+          deliveryFee: deliveryFee,
+          onCheckout: () => onCheckout(lines),
+        ),
       ],
     );
   }
@@ -325,7 +366,7 @@ class ProductTile extends StatelessWidget {
         title: Text(product.name,
             style: const TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(
-            '${product.category} • ${product.stockQuantity.toStringAsFixed(0)} ${product.unit} left'),
+            '${product.category} - ${product.stockQuantity.toStringAsFixed(0)} ${product.unit} left'),
         trailing: FilledButton.icon(
           onPressed: product.stockQuantity > 0 ? () => onAdd(product) : null,
           icon: const Icon(Icons.add, size: 18),
@@ -442,10 +483,12 @@ class SummaryCard extends StatelessWidget {
     super.key,
     required this.subtotal,
     required this.deliveryFee,
+    required this.onCheckout,
   });
 
   final double subtotal;
   final double deliveryFee;
+  final VoidCallback onCheckout;
 
   @override
   Widget build(BuildContext context) {
@@ -469,9 +512,9 @@ class SummaryCard extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.lock_outline),
-                label: const Text('Checkout coming next'),
+                onPressed: onCheckout,
+                icon: const Icon(Icons.local_shipping_outlined),
+                label: const Text('Place COD Order'),
               ),
             ),
           ],
@@ -504,6 +547,221 @@ class SummaryRow extends StatelessWidget {
         Expanded(child: Text(label, style: style)),
         Text('Rs. ${value.toStringAsFixed(0)}', style: style),
       ],
+    );
+  }
+}
+
+class CheckoutSheet extends StatefulWidget {
+  const CheckoutSheet({
+    super.key,
+    required this.lines,
+  });
+
+  final List<CartLine> lines;
+
+  @override
+  State<CheckoutSheet> createState() => _CheckoutSheetState();
+}
+
+class _CheckoutSheetState extends State<CheckoutSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _notesController = TextEditingController();
+  var _submitting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    _addressController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+
+    try {
+      await ZipzoApi().placeOrder(
+        customerName: _nameController.text.trim(),
+        customerPhone: _phoneController.text.trim(),
+        deliveryAddress: _addressController.text.trim(),
+        notes: _notesController.text.trim().isEmpty
+            ? null
+            : _notesController.text.trim(),
+        lines: widget.lines,
+      );
+
+      if (mounted) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = error.toString();
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subtotal = widget.lines.fold<double>(
+      0,
+      (sum, line) => sum + line.product.price * line.quantity,
+    );
+    final deliveryFee = subtotal >= 1500 || subtotal == 0 ? 0.0 : 100.0;
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 18,
+        right: 18,
+        top: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 18,
+      ),
+      child: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Checkout',
+                      style:
+                          TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed:
+                        _submitting ? null : () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Cash on delivery order from one store.',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _nameController,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Full name',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().length < 2) {
+                    return 'Enter your name';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Phone number',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().length < 7) {
+                    return 'Enter a valid phone number';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _addressController,
+                minLines: 2,
+                maxLines: 3,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Delivery address',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().length < 3) {
+                    return 'Enter your delivery address';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _notesController,
+                minLines: 2,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Notes optional',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 14),
+              SummaryRow(label: 'Subtotal', value: subtotal),
+              const SizedBox(height: 8),
+              SummaryRow(label: 'Delivery', value: deliveryFee),
+              const Divider(height: 24),
+              SummaryRow(
+                label: 'Total',
+                value: subtotal + deliveryFee,
+                strong: true,
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _error!,
+                  style: const TextStyle(
+                    color: Color(0xFF8A2F20),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _submitting ? null : _submit,
+                  icon: _submitting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.check_circle_outline),
+                  label:
+                      Text(_submitting ? 'Placing order...' : 'Confirm order'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -643,6 +901,47 @@ class ZipzoApi {
           .where((store) => store.type == 'shop' && store.status == 'approved')
           .toList(),
     );
+  }
+
+  Future<void> placeOrder({
+    required String customerName,
+    required String customerPhone,
+    required String deliveryAddress,
+    required List<CartLine> lines,
+    String? notes,
+  }) async {
+    if (lines.isEmpty) {
+      throw Exception('Cart is empty.');
+    }
+
+    final storeId = lines.first.product.storeId;
+    final hasMixedStores = lines.any((line) => line.product.storeId != storeId);
+    if (hasMixedStores) {
+      throw Exception('Please checkout one store at a time.');
+    }
+
+    final response = await http.post(
+      Uri.parse('$apiBaseUrl/api/v1/orders'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'customerName': customerName,
+        'customerPhone': customerPhone,
+        'storeId': storeId,
+        'deliveryAddress': deliveryAddress,
+        if (notes != null) 'notes': notes,
+        'items': lines
+            .map((line) => {
+                  'productId': line.product.id,
+                  'quantity': line.quantity,
+                })
+            .toList(),
+      }),
+    );
+
+    if (response.statusCode >= 400) {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      throw Exception(body['error'] ?? 'Order could not be placed.');
+    }
   }
 }
 

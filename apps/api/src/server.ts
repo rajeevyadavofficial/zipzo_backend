@@ -1,5 +1,6 @@
 import cors from "cors";
 import express, { type Request, type Response } from "express";
+import jwt from "jsonwebtoken";
 import { ZodError } from "zod";
 import {
   createId,
@@ -12,6 +13,7 @@ import {
   type StoreRecord
 } from "./data.js";
 import {
+  adminLoginSchema,
   createOrderSchema,
   createProductSchema,
   createStoreSchema,
@@ -23,6 +25,9 @@ import type { StoreStatus } from "@zipzo/shared";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
+const adminEmail = process.env.ADMIN_EMAIL ?? "admin@zipzo.local";
+const adminPassword = process.env.ADMIN_PASSWORD ?? "zipzo-admin";
+const jwtSecret = process.env.JWT_SECRET ?? "zipzo-dev-secret-change-me";
 
 app.use(cors());
 app.use(express.json());
@@ -33,6 +38,35 @@ app.get("/health", (_request, response) => {
     service: "zipzo-api",
     database: "postgresql",
     modes: ["MeroMart", "MeroDokaan"]
+  });
+});
+
+app.post("/api/v1/auth/login", (request, response) => {
+  const input = adminLoginSchema.parse(request.body);
+  const emailMatches = input.email.toLowerCase() === adminEmail.toLowerCase();
+  const passwordMatches = input.password === adminPassword;
+
+  if (!emailMatches || !passwordMatches) {
+    response.status(401).json({ error: "Invalid email or password" });
+    return;
+  }
+
+  const token = jwt.sign(
+    {
+      role: "admin",
+      email: adminEmail
+    },
+    jwtSecret,
+    { expiresIn: "12h" }
+  );
+
+  response.json({
+    data: {
+      token,
+      admin: {
+        email: adminEmail
+      }
+    }
   });
 });
 
@@ -55,7 +89,7 @@ app.get("/api/v1/stores/:id", async (request, response) => {
   response.json({ data: store });
 });
 
-app.post("/api/v1/stores", async (request, response) => {
+app.post("/api/v1/stores", requireAdmin, async (request, response) => {
   const input = createStoreSchema.parse(request.body);
   const status: StoreStatus = input.type === "company" ? "approved" : "pending_approval";
   const store = await pool.query<StoreRecord>(
@@ -81,7 +115,7 @@ app.post("/api/v1/stores", async (request, response) => {
   response.status(201).json({ data: store.rows[0] });
 });
 
-app.patch("/api/v1/stores/:id/status", async (request, response) => {
+app.patch("/api/v1/stores/:id/status", requireAdmin, async (request, response) => {
   const input = updateStoreStatusSchema.parse(request.body);
   const result = await pool.query<StoreRecord>(
     'UPDATE stores SET status = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *',
@@ -114,7 +148,7 @@ app.get("/api/v1/products/:id", async (request, response) => {
   response.json({ data: product });
 });
 
-app.post("/api/v1/products", async (request, response) => {
+app.post("/api/v1/products", requireAdmin, async (request, response) => {
   const input = createProductSchema.parse(request.body);
   const store = await findStore(input.storeId);
   if (!store) {
@@ -151,9 +185,10 @@ app.post("/api/v1/products", async (request, response) => {
   response.status(201).json({ data: product.rows[0] });
 });
 
-app.patch("/api/v1/products/:id", async (request, response) => {
+app.patch("/api/v1/products/:id", requireAdmin, async (request, response) => {
   const input = updateProductSchema.parse(request.body);
-  const current = await findProduct(request.params.id);
+  const productId = String(request.params.id);
+  const current = await findProduct(productId);
   if (!current) {
     response.status(404).json({ error: "Product not found" });
     return;
@@ -190,14 +225,14 @@ app.patch("/api/v1/products/:id", async (request, response) => {
   response.json({ data: product.rows[0] });
 });
 
-app.get("/api/v1/orders", async (_request, response) => {
+app.get("/api/v1/orders", requireAdmin, async (_request, response) => {
   const result = await pool.query<OrderRecord>('SELECT * FROM orders ORDER BY "createdAt" ASC');
   const orders = await Promise.all(result.rows.map(toOrderResponse));
   response.json({ data: orders });
 });
 
-app.get("/api/v1/orders/:id", async (request, response) => {
-  const order = await findOrder(request.params.id);
+app.get("/api/v1/orders/:id", requireAdmin, async (request, response) => {
+  const order = await findOrder(String(request.params.id));
   if (!order) {
     response.status(404).json({ error: "Order not found" });
     return;
@@ -301,7 +336,7 @@ app.post("/api/v1/orders", async (request, response) => {
   }
 });
 
-app.patch("/api/v1/orders/:id/status", async (request, response) => {
+app.patch("/api/v1/orders/:id/status", requireAdmin, async (request, response) => {
   const input = updateOrderStatusSchema.parse(request.body);
   const result = await pool.query<OrderRecord>(
     'UPDATE orders SET status = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *',
@@ -347,6 +382,30 @@ async function startServer() {
 void startServer();
 
 class OrderBuildError extends Error {}
+
+function requireAdmin(request: Request, response: Response, next: () => void) {
+  const authorization = request.header("authorization");
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : undefined;
+
+  if (!token) {
+    response.status(401).json({ error: "Admin login required" });
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, jwtSecret);
+    if (typeof decoded !== "object" || decoded.role !== "admin") {
+      response.status(403).json({ error: "Admin access required" });
+      return;
+    }
+
+    next();
+  } catch {
+    response.status(401).json({ error: "Invalid or expired admin session" });
+  }
+}
 
 function startSelfPing() {
   const selfPingUrl = process.env.SELF_PING_URL;

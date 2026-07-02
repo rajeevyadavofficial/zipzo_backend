@@ -10,10 +10,14 @@ import {
   Truck
 } from "lucide-react";
 import {
+  clearAdminToken,
   createProduct,
   getOrders,
   getProducts,
   getStores,
+  getAdminToken,
+  loginAdmin,
+  setAdminToken,
   updateOrderStatus,
   updateStoreStatus
 } from "./api";
@@ -36,6 +40,7 @@ const storeStatusOptions: StoreStatus[] = [
 ];
 
 export function App() {
+  const [adminToken, setTokenState] = useState(() => getAdminToken());
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -44,6 +49,10 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   async function loadDashboard() {
+    if (!adminToken) {
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
@@ -64,7 +73,22 @@ export function App() {
 
   useEffect(() => {
     void loadDashboard();
-  }, []);
+  }, [adminToken]);
+
+  async function handleLogin(email: string, password: string) {
+    const result = await loginAdmin({ email, password });
+    setAdminToken(result.data.token);
+    setTokenState(result.data.token);
+  }
+
+  function handleLogout() {
+    clearAdminToken();
+    setTokenState(null);
+    setStores([]);
+    setProducts([]);
+    setOrders([]);
+    setActiveView("overview");
+  }
 
   const stats = useMemo(() => {
     const meromartProducts = products.filter((product) => {
@@ -95,6 +119,10 @@ export function App() {
       }
     ];
   }, [orders, products, stores]);
+
+  if (!adminToken) {
+    return <LoginView onLogin={handleLogin} />;
+  }
 
   return (
     <main className="shell">
@@ -136,6 +164,9 @@ export function App() {
           <button className="icon-button" aria-label="Refresh dashboard" onClick={() => void loadDashboard()}>
             <RefreshCcw size={18} />
           </button>
+          <button className="logout-button" onClick={handleLogout}>
+            Logout
+          </button>
         </header>
 
         {error ? <div className="notice error">{error}</div> : null}
@@ -157,6 +188,69 @@ export function App() {
             await loadDashboard();
           }} />
         ) : null}
+      </section>
+    </main>
+  );
+}
+
+function LoginView({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submitLogin(event: React.FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      await onLogin(email, password);
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "Unable to login");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <div className="brand-block login-brand">
+          <span className="brand-mark">Z</span>
+          <div>
+            <strong>Zipzo</strong>
+            <small>Admin access</small>
+          </div>
+        </div>
+        <h1>Admin Login</h1>
+        <p className="login-copy">Sign in to manage MeroMart, MeroDokaan, products, and orders.</p>
+        {error ? <div className="notice error">{error}</div> : null}
+        <form className="form-grid login-form" onSubmit={(event) => void submitLogin(event)}>
+          <label>
+            Email
+            <input
+              autoComplete="email"
+              required
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              autoComplete="current-password"
+              required
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <button className="primary-button" disabled={submitting}>
+            {submitting ? "Signing in..." : "Sign in"}
+          </button>
+        </form>
       </section>
     </main>
   );

@@ -1,11 +1,26 @@
 import type { Order, OrderStatus, Product, Store, StoreStatus } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
+const tokenStorageKey = "zipzo_admin_token";
+
+export function getAdminToken() {
+  return localStorage.getItem(tokenStorageKey);
+}
+
+export function setAdminToken(token: string) {
+  localStorage.setItem(tokenStorageKey, token);
+}
+
+export function clearAdminToken() {
+  localStorage.removeItem(tokenStorageKey);
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getAdminToken();
   const response = await fetch(`${apiBaseUrl}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers
     },
     ...options
@@ -17,6 +32,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+export async function loginAdmin(input: { email: string; password: string }) {
+  return request<{ data: { token: string; admin: { email: string } } }>("/api/v1/auth/login", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }
 
 export async function getStores() {

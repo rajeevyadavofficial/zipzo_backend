@@ -54,3 +54,8 @@ export const updateOrderStatusSchema = z.object({
 export const updateStoreStatusSchema = z.object({
   status: z.enum(storeStatuses)
 });
+
+export const adminLoginSchema = z.object({
+  email: z.email(),
+  password: z.string().min(1)
+});
